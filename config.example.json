@@ -1,0 +1,33 @@
+{
+  "listen": { "host": "0.0.0.0", "port": 8080 },
+  "allowedNetworks": ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"],
+
+  "nvr": {
+    "host": "192.168.1.108",
+    "rtspPort": 554,
+    "httpPort": 80,
+    "user": "CHANGE_ME",
+    "password": "CHANGE_ME",
+    "utcOffsetMinutes": -360,
+    "maxSessions": 4
+  },
+
+  "displayTimeZone": "America/Chicago",
+
+  "go2rtc": { "bin": "./bin/go2rtc", "apiPort": 1984 },
+
+  "playback": { "maxMinutes": 30 },
+
+  "cameras": [
+    { "ch": 1, "name": "Front", "desc": "Front of house", "main": "1920x1080", "sub": "352x240" },
+    { "ch": 2, "name": "Side A", "desc": "", "main": "960x480", "sub": "352x240" },
+    { "ch": 3, "name": "Side B", "desc": "", "main": "960x480", "sub": "352x240" },
+    { "ch": 4, "name": "Back", "desc": "Backyard", "main": "960x480", "sub": "352x240" }
+  ],
+
+  "location": { "lat": null, "lon": null, "_note": "Your latitude/longitude (west = negative lon), used for timelapse sunrise/sunset." },
+
+  "frames": { "workers": 2, "retentionDays": 21 },
+
+  "timelapse": { "channel": 1, "marginMinutes": 30, "intervalSeconds": 120, "fps": 12 }
+}

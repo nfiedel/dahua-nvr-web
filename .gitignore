@@ -1,0 +1,9 @@
+# secrets / local deployment
+config.json
+nvr-viewer.service
+# runtime data: camera frames, event lists, timelapses, logs
+data/
+*.log
+# third-party binary: download per README
+bin/
+node_modules/

@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NVR Viewer</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header id="top">
+  <a class="brand" href="/all" data-link>NVR&nbsp;Viewer</a>
+  <nav>
+    <a href="/all" data-link data-nav="grid">All cameras</a>
+    <a href="/front" data-link data-nav="front">Front</a>
+    <a href="/playback" data-link data-nav="playback">Playback</a>
+    <a href="/events" data-link data-nav="events">Events</a>
+    <a href="/timelapse" data-link data-nav="timelapse">Timelapse</a>
+  </nav>
+  <div class="clocks" title="NVR clock is a fixed UTC offset (no DST); local time follows the display time zone.">
+    <span id="clk-local">–</span>
+    <span id="clk-nvr" class="muted">–</span>
+  </div>
+  <div id="sessions" class="pill" title="RTSP sessions open to the NVR (shared by all viewers)">NVR –/–</div>
+</header>
+<div id="banner" class="banner" hidden></div>
+
+<main>
+  <!-- live: all cameras -->
+  <section id="view-grid" class="view" hidden>
+    <div class="grid" id="grid"></div>
+    <p class="hint">Substreams (352×240) for the grid. Click a camera for its full-quality main stream. Keys: <kbd>1</kbd>–<kbd>4</kbd> open a camera, <kbd>Esc</kbd> returns here.</p>
+  </section>
+
+  <!-- live: single camera -->
+  <section id="view-single" class="view" hidden>
+    <div class="bar">
+      <a href="/all" data-link class="btn">← All cameras</a>
+      <h2 id="single-title"></h2>
+      <span id="single-meta" class="muted"></span>
+      <span class="spacer"></span>
+      <a id="single-pb" class="btn" data-link href="/playback">Playback</a>
+      <a id="single-ev" class="btn" data-link href="/events">Events</a>
+    </div>
+    <div class="single-wrap">
+      <div id="single-stage" class="stage"></div>
+      <aside id="thumbs" class="thumbs"></aside>
+    </div>
+  </section>
+
+  <!-- recorded playback -->
+  <section id="view-playback" class="view" hidden>
+    <form id="pb-form" class="panel form-row" autocomplete="off">
+      <label>Camera <select id="pb-ch"></select></label>
+      <label>Date <input type="date" id="pb-date" required></label>
+      <label>Time <input type="time" id="pb-time" step="1" required></label>
+      <label>Length <select id="pb-len">
+        <option value="1">1 min</option><option value="2" selected>2 min</option><option value="5">5 min</option>
+        <option value="10">10 min</option><option value="15">15 min</option><option value="30">30 min</option>
+      </select></label>
+      <button type="submit" id="pb-go" class="primary">▶ Play</button>
+      <span class="presets">
+        <button type="button" data-preset="y15">Yesterday 3:00 PM</button>
+        <button type="button" data-preset="h1">1 hour ago</button>
+        <button type="button" data-preset="m10">10 min ago</button>
+      </span>
+      <div id="pb-conv" class="conv"></div>
+    </form>
+    <div class="pb-layout">
+      <div id="pb-stage" class="stage"></div>
+      <div class="panel pb-info">
+        <div class="kv"><span>NVR clock</span><b id="pb-nvr">–</b></div>
+        <div class="kv"><span id="pb-local-label">Local</span><b id="pb-local">–</b></div>
+        <div class="progress"><div id="pb-bar"></div></div>
+        <div id="pb-state" class="muted">Pick a camera and time, then Play.</div>
+        <div class="actions">
+          <button id="pb-prev" disabled>◀ Previous</button>
+          <button id="pb-pause" disabled>Pause</button>
+          <button id="pb-stop" disabled>Stop</button>
+          <button id="pb-next" disabled>Next ▶</button>
+        </div>
+        <p class="hint">Recordings stream from the NVR's disk at <b>1× real time</b> (a 5-minute window takes 5 minutes) — there is no instant scrubbing. Choose a moment and step with Previous/Next. The NVR clock line should match the timestamp burned into the video.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- motion events -->
+  <section id="view-events" class="view" hidden>
+    <form id="ev-form" class="panel form-row" autocomplete="off">
+      <label>Camera <select id="ev-ch"></select></label>
+      <label>Date <input type="date" id="ev-date" required></label>
+      <button type="button" id="ev-prevday" title="Previous day">◀</button>
+      <button type="button" id="ev-nextday" title="Next day">▶</button>
+      <label>Group events closer than <select id="ev-merge">
+        <option value="0">— (raw)</option><option value="10">10 s</option><option value="30" selected>30 s</option>
+        <option value="60">1 min</option><option value="120">2 min</option><option value="300">5 min</option>
+      </select></label>
+      <label>Hours <select id="ev-hours">
+        <option value="all">All day</option><option value="day">6 AM–8 PM</option><option value="night">Night</option>
+      </select></label>
+      <span id="ev-summary" class="muted"></span>
+    </form>
+    <div class="panel">
+      <div id="ev-timeline" class="timeline" title="Grey = recording, orange = motion. Click to jump."></div>
+    </div>
+    <div id="ev-viewer" class="panel viewer" hidden>
+      <div class="viewer-media"><video id="ev-big" muted playsinline preload="auto"></video><div id="ev-big-status" class="status"></div></div>
+      <div class="viewer-side">
+        <div id="ev-big-title" class="big-title"></div>
+        <div id="ev-big-meta" class="muted"></div>
+        <div class="actions">
+          <button id="ev-prev">◀ Prev</button>
+          <button id="ev-next">Next ▶</button>
+          <button id="ev-play" class="primary">▶ Play recording</button>
+          <button id="ev-close">Close</button>
+        </div>
+        <p class="hint">Keys: <kbd>←</kbd>/<kbd>→</kbd> step through events, <kbd>Enter</kbd> plays the recording, <kbd>Esc</kbd> closes. Frames are the keyframe at the start of each event, fetched once from the NVR and cached.</p>
+      </div>
+    </div>
+    <div id="ev-cards" class="cards"></div>
+  </section>
+
+  <!-- timelapse -->
+  <section id="view-timelapse" class="view" hidden>
+    <form id="tl-form" class="panel form-row" autocomplete="off">
+      <label>Day <input type="date" id="tl-date" required></label>
+      <label>One frame every <select id="tl-int">
+        <option value="30">30 s</option><option value="60">1 min</option><option value="120" selected>2 min</option><option value="300">5 min</option>
+      </select></label>
+      <label>Speed <select id="tl-fps">
+        <option value="8">8 fps</option><option value="12" selected>12 fps</option><option value="24">24 fps</option>
+      </select></label>
+      <button type="submit" id="tl-go" class="primary">Render timelapse</button>
+      <div id="tl-sun" class="conv"></div>
+    </form>
+    <div id="tl-jobs"></div>
+    <h3>Rendered timelapses</h3>
+    <div id="tl-files" class="tl-files"></div>
+  </section>
+</main>
+
+<script src="/time.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+# Example systemd unit. Copy to /etc/systemd/system/nvr-viewer.service and adjust the paths and user.
+[Unit]
+Description=NVR Viewer (LAN web app for Dahua-based NVRs; bundles go2rtc)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nvr-viewer
+WorkingDirectory=/opt/nvr-viewer
+ExecStart=/usr/bin/node /opt/nvr-viewer/server.js
+Restart=on-failure
+RestartSec=3
+KillMode=control-group
+Nice=5
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target
