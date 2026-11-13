@@ -35,6 +35,7 @@ const fmtDur = (s) => (s >= 3600 ? `${Math.floor(s / 3600)}h ${Math.round((s % 3
 // ===================================================================== MSE player (go2rtc websocket)
 // Players whose play() was refused (iOS Low Power Mode blocks even muted autoplay). Any tap resumes them all.
 const blockedPlayers = new Set();
+let shownAt = 0; // when the page last became visible again (see onShown)
 document.addEventListener('click', () => { for (const p of [...blockedPlayers]) p.resume(); }, true);
 const CODECS = ['avc1.640029', 'avc1.64002A', 'avc1.640033', 'avc1.4D401F', 'avc1.42E01E', 'hvc1.1.6.L153.B0', 'mp4a.40.2', 'mp4a.40.5', 'flac', 'opus'];
 class MsePlayer {
@@ -44,13 +45,13 @@ class MsePlayer {
   }
   start(src) {
     this.stop(true);
-    this.src = src; this.active = true; this.retry = 0;
+    this.src = src; this.active = true; this.retry = 0; this.userPaused = false;
     this._open();
     if (this.live) this.watch = setInterval(() => this._watchdog(), 5000);
   }
   stop(silent) {
     this.active = false;
-    clearTimeout(this.timer); clearInterval(this.watch);
+    clearTimeout(this.timer); this.timer = null; clearInterval(this.watch); clearTimeout(this.wakeCheck);
     this.blocked = false; blockedPlayers.delete(this);
     this._teardown();
     if (!silent) this.onState('idle');
@@ -66,6 +67,18 @@ class MsePlayer {
     if (this.live && b.length) v.currentTime = Math.max(b.start(0), b.end(b.length - 1) - 0.4);
     this._play();
   }
+  // Page visible again. iOS closes our sockets on screen lock / app switch, and timers were frozen meanwhile:
+  // reconnect now instead of after the backoff. At most one reconnect per player per wake, no polling.
+  wake() {
+    if (!this.active) return;
+    const v = this.video;
+    if (!this.live) { if (!this.userPaused && !this.streamDone && v.paused && this.base != null) this._play(); return; }
+    if (!this.ws) { if (this.timer) this._reopen(); return; } // was waiting out a backoff
+    if (v.paused && this.base != null) this._play();
+    clearTimeout(this.wakeCheck); // socket looks open; if nothing arrives once queued messages have drained, it's dead
+    this.wakeCheck = setTimeout(() => { if (this.active && this.ws && this.base != null && Date.now() - this.lastData > 3000) this._reopen(); }, 1500);
+  }
+  _reopen() { clearTimeout(this.timer); this.timer = null; this._teardown(); this.retry = 0; this.onState('connecting'); this._open(); }
   get elapsed() { return this.base == null ? 0 : Math.max(0, this.video.currentTime - this.base); }
   get bufferedAhead() { const b = this.video.buffered; return b.length ? b.end(b.length - 1) - this.video.currentTime : 0; }
   _teardown() {
@@ -164,10 +177,13 @@ class MsePlayer {
     }
     const busy = !!(this.err && /^busy/i.test(this.err));
     const msg = this.err || 'Connection lost — reconnecting…';
-    const delay = busy ? 10000 : Math.min(30000, 2000 * 2 ** this.retry++);
+    // closed by the lock / app switch we just came back from: reconnect at once, once per wake
+    const woke = !busy && Date.now() - shownAt < 3000 && this.wokeAt !== shownAt;
+    if (woke) this.wokeAt = shownAt;
+    const delay = busy ? 10000 : woke ? 0 : Math.min(30000, 2000 * 2 ** this.retry++);
     this._teardown();
-    this.onState(busy ? 'busy' : 'error', msg);
-    this.timer = setTimeout(() => { if (this.active) this._open(); }, delay);
+    if (woke) this.onState('connecting'); else this.onState(busy ? 'busy' : 'error', msg);
+    this.timer = setTimeout(() => { this.timer = null; if (this.active) this._open(); }, delay);
   }
 }
 
@@ -195,7 +211,7 @@ function makeTile(cam, quality, { onclick, big } = {}) {
       else if (s === 'idle') { setStatus(''); showSnap(false); }
     },
   });
-  return { el, start() { player.start(`live_${cam.ch}_${quality}`); }, stop() { player.stop(); showSnap(false); } };
+  return { el, start() { player.start(`live_${cam.ch}_${quality}`); }, stop() { player.stop(); showSnap(false); }, wake() { player.wake(); } };
 }
 
 // ===================================================================== views
@@ -207,6 +223,7 @@ views.grid = {
   init() { this.tiles = CAMS.map((c) => makeTile(c, 'sub', { onclick: () => go(`/cam/${c.ch}`) })); $('#grid').append(...this.tiles.map((t) => t.el)); },
   enter() { document.title = 'All cameras · NVR'; this.tiles.forEach((t) => t.start()); },
   leave() { this.tiles.forEach((t) => t.stop()); },
+  wake() { this.tiles.forEach((t) => t.wake()); },
 };
 
 views.single = {
@@ -228,6 +245,7 @@ views.single = {
     if (!document.body.classList.contains('kiosk')) { load(); this.timer = setInterval(load, 15000); }
   },
   leave() { if (this.tile) this.tile.stop(); clearInterval(this.timer); $('#thumbs').replaceChildren(); },
+  wake() { if (this.tile) this.tile.wake(); },
 };
 
 // ----------------------------------------------------------------- playback
@@ -254,8 +272,8 @@ views.playback = {
     $('#pb-next').onclick = () => this.step(1);
     $('#pb-stop').onclick = () => { this.player.stop(); this.setButtons(); $('#pb-state').textContent = 'Stopped.'; };
     $('#pb-pause').onclick = () => {
-      if (this.video.paused) { this.video.play().catch(() => {}); $('#pb-pause').textContent = 'Pause'; }
-      else { this.video.pause(); $('#pb-pause').textContent = 'Resume'; }
+      if (this.video.paused) { this.player.userPaused = false; this.player.resume(); $('#pb-pause').textContent = 'Pause'; }
+      else { this.player.userPaused = true; this.video.pause(); $('#pb-pause').textContent = 'Resume'; }
     };
   },
   enter(r) {
@@ -272,6 +290,7 @@ views.playback = {
     if (q.get('autoplay') === '1') this.play(q.get('utc') ? +q.get('utc') : null);
   },
   leave() { this.player.stop(); clearInterval(this.tick); },
+  wake() { this.player.wake(); },
   resolveInput() {
     const [y, mo, d] = ($('#pb-date').value || '').split('-').map(Number);
     const [hh, mi, ss] = ($('#pb-time').value || '').split(':').map(Number);
@@ -620,12 +639,15 @@ let hiddenTimer = null; let pausedByHide = false;
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     hiddenTimer = setTimeout(() => { if (current && (current === views.grid || current === views.single)) { current.leave(); pausedByHide = true; } }, 20000);
-  } else {
-    clearTimeout(hiddenTimer);
-    if (pausedByHide) { pausedByHide = false; current.enter(route()); }
-    pollSessions(); pollStatus();
-  }
+  } else onShown();
 });
+window.addEventListener('pageshow', (e) => { if (e.persisted) onShown(); }); // restored from the back/forward cache
+function onShown() {
+  shownAt = Date.now();
+  clearTimeout(hiddenTimer);
+  if (pausedByHide) { pausedByHide = false; current.enter(route()); } else if (current && current.wake) current.wake();
+  pollSessions(); pollStatus();
+}
 
 // ===================================================================== header: clocks, sessions, status
 let skew = 0;
