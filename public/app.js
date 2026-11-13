@@ -33,6 +33,10 @@ const addDays = (dateStr, n) => { const [y, m, d] = dateStr.split('-').map(Numbe
 const fmtDur = (s) => (s >= 3600 ? `${Math.floor(s / 3600)}h ${Math.round((s % 3600) / 60)}m` : s >= 60 ? `${Math.floor(s / 60)}m ${pad(Math.round(s % 60))}s` : `${Math.round(s)}s`);
 
 // ===================================================================== MSE player (go2rtc websocket)
+// Players whose play() was refused (iOS Low Power Mode blocks even muted autoplay). Any tap resumes them all.
+const blockedPlayers = new Set();
+let shownAt = 0; // when the page last became visible again (see onShown)
+document.addEventListener('click', () => { for (const p of [...blockedPlayers]) p.resume(); }, true);
 const CODECS = ['avc1.640029', 'avc1.64002A', 'avc1.640033', 'avc1.4D401F', 'avc1.42E01E', 'hvc1.1.6.L153.B0', 'mp4a.40.2', 'mp4a.40.5', 'flac', 'opus'];
 class MsePlayer {
   constructor(video, { live = true, onState = () => {} } = {}) {
@@ -41,16 +45,40 @@ class MsePlayer {
   }
   start(src) {
     this.stop(true);
-    this.src = src; this.active = true; this.retry = 0;
+    this.src = src; this.active = true; this.retry = 0; this.userPaused = false;
     this._open();
     if (this.live) this.watch = setInterval(() => this._watchdog(), 5000);
   }
   stop(silent) {
     this.active = false;
-    clearTimeout(this.timer); clearInterval(this.watch);
+    clearTimeout(this.timer); this.timer = null; clearInterval(this.watch); clearTimeout(this.wakeCheck);
+    this.blocked = false; blockedPlayers.delete(this);
     this._teardown();
     if (!silent) this.onState('idle');
   }
+  _play() {
+    const p = this.video.play();
+    if (!p || !p.then) return;
+    p.then(() => { if (this.blocked) { this.blocked = false; blockedPlayers.delete(this); } },
+      (e) => { if (e && e.name === 'NotAllowedError' && this.active) { this.blocked = true; blockedPlayers.add(this); } });
+  }
+  resume() { // from a user gesture: jump to the live edge (live) and play
+    const v = this.video; const b = v.buffered;
+    if (this.live && b.length) v.currentTime = Math.max(b.start(0), b.end(b.length - 1) - 0.4);
+    this._play();
+  }
+  // Page visible again. iOS closes our sockets on screen lock / app switch, and timers were frozen meanwhile:
+  // reconnect now instead of after the backoff. At most one reconnect per player per wake, no polling.
+  wake() {
+    if (!this.active) return;
+    const v = this.video;
+    if (!this.live) { if (!this.userPaused && !this.streamDone && v.paused && this.base != null) this._play(); return; }
+    if (!this.ws) { if (this.timer) this._reopen(); return; } // was waiting out a backoff
+    if (v.paused && this.base != null) this._play();
+    clearTimeout(this.wakeCheck); // socket looks open; if nothing arrives once queued messages have drained, it's dead
+    this.wakeCheck = setTimeout(() => { if (this.active && this.ws && this.base != null && Date.now() - this.lastData > 3000) this._reopen(); }, 1500);
+  }
+  _reopen() { clearTimeout(this.timer); this.timer = null; this._teardown(); this.retry = 0; this.onState('connecting'); this._open(); }
   get elapsed() { return this.base == null ? 0 : Math.max(0, this.video.currentTime - this.base); }
   get bufferedAhead() { const b = this.video.buffered; return b.length ? b.end(b.length - 1) - this.video.currentTime : 0; }
   _teardown() {
@@ -65,7 +93,7 @@ class MsePlayer {
   _open() {
     const MS = window.MediaSource || window.ManagedMediaSource;
     if (!MS) { this.onState('error', 'This browser lacks Media Source Extensions.'); return; }
-    const ms = new MS(); this.ms = ms; this.queue = []; this.sb = null; this.base = null; this.err = null; this.lastData = Date.now(); this.streamDone = false;
+    const ms = new MS(); this.ms = ms; this.queue = []; this.sb = null; this.base = null; this.err = null; this.lastData = Date.now(); this.streamDone = false; this.initSeen = false;
     const v = this.video;
     v.muted = true; v.playsInline = true;
     if (MS === window.ManagedMediaSource && !window.MediaSource) { v.disableRemotePlayback = true; v.srcObject = ms; } else v.src = URL.createObjectURL(ms);
@@ -96,7 +124,13 @@ class MsePlayer {
         return;
       }
       this.lastData = Date.now();
-      this.queue.push(new Uint8Array(ev.data));
+      const chunk = new Uint8Array(ev.data);
+      if (!this.initSeen) { // first binary message is the init segment: fix go2rtc's bogus picture size (see mp4init.js)
+        this.initSeen = true;
+        const fx = window.Mp4Init && window.Mp4Init.fixInit(chunk);
+        if (fx && fx.length) console.debug('mp4 init size fixed', this.src, fx);
+      }
+      this.queue.push(chunk);
       this._pump();
     };
     ws.onclose = () => { if (this.ws !== ws) return; this.ws = null; this._closed(); };
@@ -107,8 +141,9 @@ class MsePlayer {
     const b = sb.buffered;
     if (b.length) {
       const start = b.start(0); const end = b.end(b.length - 1);
-      if (this.base == null) { this.base = start; v.currentTime = start; v.play().catch(() => {}); this.retry = 0; this.onState('playing'); }
+      if (this.base == null) { this.base = start; v.currentTime = start; this._play(); this.retry = 0; this.onState('playing'); }
       if (this.live && !v.paused && end - v.currentTime > 2.5) v.currentTime = end - 0.4; // stay at the live edge
+      else if (this.live && v.paused && end - v.currentTime > 30) v.currentTime = end - 0.4; // not playing (autoplay blocked): keep the trim below working
       if (v.currentTime - start > 60) { try { sb.remove(start, v.currentTime - 20); return; } catch (_) { /* */ } }
     }
     if (!this.queue.length) return;
@@ -118,8 +153,15 @@ class MsePlayer {
       const n = this.queue.reduce((a, c) => a + c.length, 0); data = new Uint8Array(n);
       let o = 0; for (const c of this.queue) { data.set(c, o); o += c.length; } this.queue = [];
     }
-    try { sb.appendBuffer(data); } catch (e) {
-      if (e.name !== 'QuotaExceededError') { this.err = 'Playback error: ' + e.message; if (this.ws) this.ws.close(); }
+    try { sb.appendBuffer(data); this.evicting = false; } catch (e) {
+      if (e.name !== 'QuotaExceededError') { this.err = 'Playback error: ' + e.message; if (this.ws) this.ws.close(); return; }
+      // Buffer full (ManagedMediaSource on iOS has a small quota): free what's behind the playhead and retry
+      // this chunk once on updateend instead of dropping it (a dropped fragment corrupts video until the next keyframe).
+      const b = sb.buffered;
+      if (!this.evicting && b.length && v.currentTime - b.start(0) > 2) {
+        this.evicting = true; this.queue.unshift(data);
+        try { sb.remove(b.start(0), v.currentTime - 1); } catch (_) { this.queue.shift(); this.evicting = false; }
+      } else this.evicting = false; // nothing to free: drop it, as before
     }
   }
   _watchdog() {
@@ -135,10 +177,13 @@ class MsePlayer {
     }
     const busy = !!(this.err && /^busy/i.test(this.err));
     const msg = this.err || 'Connection lost — reconnecting…';
-    const delay = busy ? 10000 : Math.min(30000, 2000 * 2 ** this.retry++);
+    // closed by the lock / app switch we just came back from: reconnect at once, once per wake
+    const woke = !busy && Date.now() - shownAt < 3000 && this.wokeAt !== shownAt;
+    if (woke) this.wokeAt = shownAt;
+    const delay = busy ? 10000 : woke ? 0 : Math.min(30000, 2000 * 2 ** this.retry++);
     this._teardown();
-    this.onState(busy ? 'busy' : 'error', msg);
-    this.timer = setTimeout(() => { if (this.active) this._open(); }, delay);
+    if (woke) this.onState('connecting'); else this.onState(busy ? 'busy' : 'error', msg);
+    this.timer = setTimeout(() => { this.timer = null; if (this.active) this._open(); }, delay);
   }
 }
 
@@ -148,14 +193,15 @@ function makeTile(cam, quality, { onclick, big } = {}) {
   const snap = h('img', { class: 'snap', alt: '' }); snap.hidden = true;
   const status = h('div', { class: 'status' });
   const label = h('div', { class: 'label' }, h('b', {}, cam.name), h('span', {}, ` · ${cam.desc} · ${quality === 'main' ? cam.main : cam.sub}`));
-  const el = h('div', { class: 'tile' + (big ? ' big' : ''), onclick }, video, snap, status, label);
+  let player = null;
+  const el = h('div', { class: 'tile' + (big ? ' big' : ''), onclick: onclick && ((e) => { if (!player.blocked) onclick(e); }) }, video, snap, status, label);
   let snapTimer = null;
   const showSnap = (on) => {
     clearInterval(snapTimer); snap.hidden = !on;
     if (on) { const load = () => { snap.src = `/api/snapshot?ch=${cam.ch}&t=${Date.now()}`; }; load(); snapTimer = setInterval(load, 10000); }
   };
   const setStatus = (text, cls) => { status.textContent = text || ''; status.className = 'status' + (cls ? ' ' + cls : ''); };
-  const player = new MsePlayer(video, {
+  player = new MsePlayer(video, {
     live: true,
     onState: (s, msg) => {
       if (s === 'playing') { setStatus(''); showSnap(false); }
@@ -165,7 +211,7 @@ function makeTile(cam, quality, { onclick, big } = {}) {
       else if (s === 'idle') { setStatus(''); showSnap(false); }
     },
   });
-  return { el, start() { player.start(`live_${cam.ch}_${quality}`); }, stop() { player.stop(); showSnap(false); } };
+  return { el, start() { player.start(`live_${cam.ch}_${quality}`); }, stop() { player.stop(); showSnap(false); }, wake() { player.wake(); } };
 }
 
 // ===================================================================== views
@@ -177,6 +223,7 @@ views.grid = {
   init() { this.tiles = CAMS.map((c) => makeTile(c, 'sub', { onclick: () => go(`/cam/${c.ch}`) })); $('#grid').append(...this.tiles.map((t) => t.el)); },
   enter() { document.title = 'All cameras · NVR'; this.tiles.forEach((t) => t.start()); },
   leave() { this.tiles.forEach((t) => t.stop()); },
+  wake() { this.tiles.forEach((t) => t.wake()); },
 };
 
 views.single = {
@@ -198,6 +245,7 @@ views.single = {
     if (!document.body.classList.contains('kiosk')) { load(); this.timer = setInterval(load, 15000); }
   },
   leave() { if (this.tile) this.tile.stop(); clearInterval(this.timer); $('#thumbs').replaceChildren(); },
+  wake() { if (this.tile) this.tile.wake(); },
 };
 
 // ----------------------------------------------------------------- playback
@@ -224,8 +272,8 @@ views.playback = {
     $('#pb-next').onclick = () => this.step(1);
     $('#pb-stop').onclick = () => { this.player.stop(); this.setButtons(); $('#pb-state').textContent = 'Stopped.'; };
     $('#pb-pause').onclick = () => {
-      if (this.video.paused) { this.video.play().catch(() => {}); $('#pb-pause').textContent = 'Pause'; }
-      else { this.video.pause(); $('#pb-pause').textContent = 'Resume'; }
+      if (this.video.paused) { this.player.userPaused = false; this.player.resume(); $('#pb-pause').textContent = 'Pause'; }
+      else { this.player.userPaused = true; this.video.pause(); $('#pb-pause').textContent = 'Resume'; }
     };
   },
   enter(r) {
@@ -242,6 +290,7 @@ views.playback = {
     if (q.get('autoplay') === '1') this.play(q.get('utc') ? +q.get('utc') : null);
   },
   leave() { this.player.stop(); clearInterval(this.tick); },
+  wake() { this.player.wake(); },
   resolveInput() {
     const [y, mo, d] = ($('#pb-date').value || '').split('-').map(Number);
     const [hh, mi, ss] = ($('#pb-time').value || '').split(':').map(Number);
@@ -257,8 +306,8 @@ views.playback = {
       '  →  NVR clock ', h('b', {}, TU.nvrText(r.utc, OFF)), ` (${TU.offsetLabel(OFF)}, no DST)`,
       r.ambiguous ? h('span', { class: 'note' }, '  · ambiguous hour (DST fall-back): using the first occurrence') : null);
   },
-  async play(utcStart) {
-    const minutes = Number($('#pb-len').value);
+  async play(utcStart, minutesOverride) {
+    const minutes = minutesOverride || Number($('#pb-len').value);
     const ch = Number($('#pb-ch').value);
     const body = { ch, minutes };
     if (utcStart != null) body.utcStart = utcStart;
@@ -304,7 +353,15 @@ views.playback = {
     $('#pb-local').textContent = TU.zoneText(t, TZ);
     $('#pb-bar').style.width = Math.min(100, (100 * el) / pb.durationSec) + '%';
     if (this.player.streamDone && this.player.bufferedAhead < 0.3 && this.player.base != null) {
-      $('#pb-state').textContent = `Window finished (${fmtDur(pb.durationSec)}). Use Next ▶ to continue.`;
+      // Ended well short of what the NVR said it has (e.g. iOS closed the socket on screen lock): offer to
+      // continue from here. Never automatic: reconnecting the same stream would restart the clip.
+      const expected = Math.min(pb.durationSec, pb.recordedSec || pb.durationSec);
+      if (el < expected - 5) {
+        const at = pb.utcStart + Math.floor(el) * 1000;
+        const min = Math.min(CFG.playbackMaxMinutes, Math.max(1, Math.ceil((pb.durationSec - el) / 60)));
+        $('#pb-state').replaceChildren(`Stream interrupted at ${shortTime(at)}. `,
+          h('button', { class: 'primary', onclick: () => { $('#pb-ch').value = pb.ch; this.play(at, min); } }, '▶ Resume'));
+      } else $('#pb-state').textContent = `Window finished (${fmtDur(pb.durationSec)}). Use Next ▶ to continue.`;
       this.player.active = false; this.setButtons();
     }
   },
@@ -336,7 +393,7 @@ const kf = {
     this._running = this._running || [];
     while (this.active < this.LIMIT && this.q.length) {
       const job = this.q.shift(); job.started = true; this.active++; this._running.push(job);
-      fetch(`/api/keyframe?ch=${job.ch}&t=${job.t}`, { signal: job.ctrl.signal })
+      fetch(`/api/keyframe?ch=${job.ch}&t=${job.t}&v=2`, { signal: job.ctrl.signal })
         .then(async (r) => { if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'HTTP ' + r.status); return r.blob(); })
         .then((b) => { const u = URL.createObjectURL(b); this.cache.set(job.key, u); job.res(u); }, (e) => job.rej(e))
         .finally(() => { this.active--; this._running = this._running.filter((j) => j !== job); this.pump(); });
@@ -590,12 +647,15 @@ let hiddenTimer = null; let pausedByHide = false;
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     hiddenTimer = setTimeout(() => { if (current && (current === views.grid || current === views.single)) { current.leave(); pausedByHide = true; } }, 20000);
-  } else {
-    clearTimeout(hiddenTimer);
-    if (pausedByHide) { pausedByHide = false; current.enter(route()); }
-    pollSessions(); pollStatus();
-  }
+  } else onShown();
 });
+window.addEventListener('pageshow', (e) => { if (e.persisted) onShown(); }); // restored from the back/forward cache
+function onShown() {
+  shownAt = Date.now();
+  clearTimeout(hiddenTimer);
+  if (pausedByHide) { pausedByHide = false; current.enter(route()); } else if (current && current.wake) current.wake();
+  pollSessions(); pollStatus();
+}
 
 // ===================================================================== header: clocks, sessions, status
 let skew = 0;
