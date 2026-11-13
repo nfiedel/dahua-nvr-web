@@ -65,7 +65,7 @@ class MsePlayer {
   _open() {
     const MS = window.MediaSource || window.ManagedMediaSource;
     if (!MS) { this.onState('error', 'This browser lacks Media Source Extensions.'); return; }
-    const ms = new MS(); this.ms = ms; this.queue = []; this.sb = null; this.base = null; this.err = null; this.lastData = Date.now(); this.streamDone = false;
+    const ms = new MS(); this.ms = ms; this.queue = []; this.sb = null; this.base = null; this.err = null; this.lastData = Date.now(); this.streamDone = false; this.initSeen = false;
     const v = this.video;
     v.muted = true; v.playsInline = true;
     if (MS === window.ManagedMediaSource && !window.MediaSource) { v.disableRemotePlayback = true; v.srcObject = ms; } else v.src = URL.createObjectURL(ms);
@@ -96,7 +96,13 @@ class MsePlayer {
         return;
       }
       this.lastData = Date.now();
-      this.queue.push(new Uint8Array(ev.data));
+      const chunk = new Uint8Array(ev.data);
+      if (!this.initSeen) { // first binary message is the init segment: fix go2rtc's bogus picture size (see mp4init.js)
+        this.initSeen = true;
+        const fx = window.Mp4Init && window.Mp4Init.fixInit(chunk);
+        if (fx && fx.length) console.debug('mp4 init size fixed', this.src, fx);
+      }
+      this.queue.push(chunk);
       this._pump();
     };
     ws.onclose = () => { if (this.ws !== ws) return; this.ws = null; this._closed(); };

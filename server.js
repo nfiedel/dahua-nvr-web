@@ -626,7 +626,7 @@ function allowed(addr) {
   return nets.some(([net, m]) => ((n & m) >>> 0) === net);
 }
 
-const STATIC = { '/index.html': 'text/html; charset=utf-8', '/app.js': 'text/javascript; charset=utf-8', '/time.js': 'text/javascript; charset=utf-8', '/style.css': 'text/css; charset=utf-8', '/favicon.svg': 'image/svg+xml' };
+const STATIC = { '/index.html': 'text/html; charset=utf-8', '/app.js': 'text/javascript; charset=utf-8', '/time.js': 'text/javascript; charset=utf-8', '/mp4init.js': 'text/javascript; charset=utf-8', '/style.css': 'text/css; charset=utf-8', '/favicon.svg': 'image/svg+xml' };
 const SPA = /^\/(?:|all|front|live|cam\/\d+|playback|events|timelapse)\/?$/;
 
 function sendFile(req, res, file, type) {
