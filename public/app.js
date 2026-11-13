@@ -140,8 +140,15 @@ class MsePlayer {
       const n = this.queue.reduce((a, c) => a + c.length, 0); data = new Uint8Array(n);
       let o = 0; for (const c of this.queue) { data.set(c, o); o += c.length; } this.queue = [];
     }
-    try { sb.appendBuffer(data); } catch (e) {
-      if (e.name !== 'QuotaExceededError') { this.err = 'Playback error: ' + e.message; if (this.ws) this.ws.close(); }
+    try { sb.appendBuffer(data); this.evicting = false; } catch (e) {
+      if (e.name !== 'QuotaExceededError') { this.err = 'Playback error: ' + e.message; if (this.ws) this.ws.close(); return; }
+      // Buffer full (ManagedMediaSource on iOS has a small quota): free what's behind the playhead and retry
+      // this chunk once on updateend instead of dropping it (a dropped fragment corrupts video until the next keyframe).
+      const b = sb.buffered;
+      if (!this.evicting && b.length && v.currentTime - b.start(0) > 2) {
+        this.evicting = true; this.queue.unshift(data);
+        try { sb.remove(b.start(0), v.currentTime - 1); } catch (_) { this.queue.shift(); this.evicting = false; }
+      } else this.evicting = false; // nothing to free: drop it, as before
     }
   }
   _watchdog() {
