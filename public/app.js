@@ -33,6 +33,9 @@ const addDays = (dateStr, n) => { const [y, m, d] = dateStr.split('-').map(Numbe
 const fmtDur = (s) => (s >= 3600 ? `${Math.floor(s / 3600)}h ${Math.round((s % 3600) / 60)}m` : s >= 60 ? `${Math.floor(s / 60)}m ${pad(Math.round(s % 60))}s` : `${Math.round(s)}s`);
 
 // ===================================================================== MSE player (go2rtc websocket)
+// Players whose play() was refused (iOS Low Power Mode blocks even muted autoplay). Any tap resumes them all.
+const blockedPlayers = new Set();
+document.addEventListener('click', () => { for (const p of [...blockedPlayers]) p.resume(); }, true);
 const CODECS = ['avc1.640029', 'avc1.64002A', 'avc1.640033', 'avc1.4D401F', 'avc1.42E01E', 'hvc1.1.6.L153.B0', 'mp4a.40.2', 'mp4a.40.5', 'flac', 'opus'];
 class MsePlayer {
   constructor(video, { live = true, onState = () => {} } = {}) {
@@ -48,8 +51,20 @@ class MsePlayer {
   stop(silent) {
     this.active = false;
     clearTimeout(this.timer); clearInterval(this.watch);
+    this.blocked = false; blockedPlayers.delete(this);
     this._teardown();
     if (!silent) this.onState('idle');
+  }
+  _play() {
+    const p = this.video.play();
+    if (!p || !p.then) return;
+    p.then(() => { if (this.blocked) { this.blocked = false; blockedPlayers.delete(this); } },
+      (e) => { if (e && e.name === 'NotAllowedError' && this.active) { this.blocked = true; blockedPlayers.add(this); } });
+  }
+  resume() { // from a user gesture: jump to the live edge (live) and play
+    const v = this.video; const b = v.buffered;
+    if (this.live && b.length) v.currentTime = Math.max(b.start(0), b.end(b.length - 1) - 0.4);
+    this._play();
   }
   get elapsed() { return this.base == null ? 0 : Math.max(0, this.video.currentTime - this.base); }
   get bufferedAhead() { const b = this.video.buffered; return b.length ? b.end(b.length - 1) - this.video.currentTime : 0; }
@@ -113,8 +128,9 @@ class MsePlayer {
     const b = sb.buffered;
     if (b.length) {
       const start = b.start(0); const end = b.end(b.length - 1);
-      if (this.base == null) { this.base = start; v.currentTime = start; v.play().catch(() => {}); this.retry = 0; this.onState('playing'); }
+      if (this.base == null) { this.base = start; v.currentTime = start; this._play(); this.retry = 0; this.onState('playing'); }
       if (this.live && !v.paused && end - v.currentTime > 2.5) v.currentTime = end - 0.4; // stay at the live edge
+      else if (this.live && v.paused && end - v.currentTime > 30) v.currentTime = end - 0.4; // not playing (autoplay blocked): keep the trim below working
       if (v.currentTime - start > 60) { try { sb.remove(start, v.currentTime - 20); return; } catch (_) { /* */ } }
     }
     if (!this.queue.length) return;
@@ -154,14 +170,15 @@ function makeTile(cam, quality, { onclick, big } = {}) {
   const snap = h('img', { class: 'snap', alt: '' }); snap.hidden = true;
   const status = h('div', { class: 'status' });
   const label = h('div', { class: 'label' }, h('b', {}, cam.name), h('span', {}, ` · ${cam.desc} · ${quality === 'main' ? cam.main : cam.sub}`));
-  const el = h('div', { class: 'tile' + (big ? ' big' : ''), onclick }, video, snap, status, label);
+  let player = null;
+  const el = h('div', { class: 'tile' + (big ? ' big' : ''), onclick: onclick && ((e) => { if (!player.blocked) onclick(e); }) }, video, snap, status, label);
   let snapTimer = null;
   const showSnap = (on) => {
     clearInterval(snapTimer); snap.hidden = !on;
     if (on) { const load = () => { snap.src = `/api/snapshot?ch=${cam.ch}&t=${Date.now()}`; }; load(); snapTimer = setInterval(load, 10000); }
   };
   const setStatus = (text, cls) => { status.textContent = text || ''; status.className = 'status' + (cls ? ' ' + cls : ''); };
-  const player = new MsePlayer(video, {
+  player = new MsePlayer(video, {
     live: true,
     onState: (s, msg) => {
       if (s === 'playing') { setStatus(''); showSnap(false); }
