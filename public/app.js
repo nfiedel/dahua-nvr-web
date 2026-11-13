@@ -342,7 +342,7 @@ const kf = {
     this._running = this._running || [];
     while (this.active < this.LIMIT && this.q.length) {
       const job = this.q.shift(); job.started = true; this.active++; this._running.push(job);
-      fetch(`/api/keyframe?ch=${job.ch}&t=${job.t}`, { signal: job.ctrl.signal })
+      fetch(`/api/keyframe?ch=${job.ch}&t=${job.t}&v=2`, { signal: job.ctrl.signal })
         .then(async (r) => { if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'HTTP ' + r.status); return r.blob(); })
         .then((b) => { const u = URL.createObjectURL(b); this.cache.set(job.key, u); job.res(u); }, (e) => job.rej(e))
         .finally(() => { this.active--; this._running = this._running.filter((j) => j !== job); this.pump(); });
