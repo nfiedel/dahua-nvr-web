@@ -306,8 +306,8 @@ views.playback = {
       '  →  NVR clock ', h('b', {}, TU.nvrText(r.utc, OFF)), ` (${TU.offsetLabel(OFF)}, no DST)`,
       r.ambiguous ? h('span', { class: 'note' }, '  · ambiguous hour (DST fall-back): using the first occurrence') : null);
   },
-  async play(utcStart) {
-    const minutes = Number($('#pb-len').value);
+  async play(utcStart, minutesOverride) {
+    const minutes = minutesOverride || Number($('#pb-len').value);
     const ch = Number($('#pb-ch').value);
     const body = { ch, minutes };
     if (utcStart != null) body.utcStart = utcStart;
@@ -353,7 +353,15 @@ views.playback = {
     $('#pb-local').textContent = TU.zoneText(t, TZ);
     $('#pb-bar').style.width = Math.min(100, (100 * el) / pb.durationSec) + '%';
     if (this.player.streamDone && this.player.bufferedAhead < 0.3 && this.player.base != null) {
-      $('#pb-state').textContent = `Window finished (${fmtDur(pb.durationSec)}). Use Next ▶ to continue.`;
+      // Ended well short of what the NVR said it has (e.g. iOS closed the socket on screen lock): offer to
+      // continue from here. Never automatic: reconnecting the same stream would restart the clip.
+      const expected = Math.min(pb.durationSec, pb.recordedSec || pb.durationSec);
+      if (el < expected - 5) {
+        const at = pb.utcStart + Math.floor(el) * 1000;
+        const min = Math.min(CFG.playbackMaxMinutes, Math.max(1, Math.ceil((pb.durationSec - el) / 60)));
+        $('#pb-state').replaceChildren(`Stream interrupted at ${shortTime(at)}. `,
+          h('button', { class: 'primary', onclick: () => { $('#pb-ch').value = pb.ch; this.play(at, min); } }, '▶ Resume'));
+      } else $('#pb-state').textContent = `Window finished (${fmtDur(pb.durationSec)}). Use Next ▶ to continue.`;
       this.player.active = false; this.setButtons();
     }
   },
