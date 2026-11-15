@@ -1,7 +1,7 @@
 {
   "name": "NVR Viewer",
   "short_name": "NVR",
-  "start_url": "/all",
+  "start_url": "/",
   "scope": "/",
   "display": "standalone",
   "background_color": "#0f1318",

@@ -606,11 +606,11 @@ function route() {
   const p = location.pathname.replace(/\/+$/, '') || '/';
   const query = new URLSearchParams(location.search);
   let m;
-  if (p === '/' || p === '/all' || p === '/live') return { view: 'grid', nav: 'grid', query };
-  if (p === '/front') return { view: 'single', ch: 1, nav: 'front', query };
+  if (p === '/' || p === '/front') return { view: 'single', ch: 1, nav: 'front', query }; // home = front camera
+  if (p === '/all' || p === '/live') return { view: 'grid', nav: 'grid', query };
   if ((m = /^\/cam\/(\d+)$/.exec(p))) return { view: 'single', ch: +m[1], nav: +m[1] === 1 ? 'front' : 'grid', query };
   if (['/playback', '/events', '/timelapse'].includes(p)) return { view: p.slice(1), nav: p.slice(1), query };
-  return { view: 'grid', nav: 'grid', query };
+  return { view: 'single', ch: 1, nav: 'front', query };
 }
 const routeKey = (r) => r.view + ':' + (r.ch || '') + ':' + r.query.toString();
 function go(url) { history.pushState(null, '', url); render(); }

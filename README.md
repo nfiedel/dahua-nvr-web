@@ -14,8 +14,8 @@ Browser ──HTTP / WebSocket──▶ server.js (:8080, LAN) ──WS pipe─�
 
 | URL | What |
 |---|---|
-| `http://<this-box>:8080/front` | **Camera 1 only**, live main stream. Add `?kiosk=1` for a chrome-less wall display. |
-| `http://<this-box>:8080/all` | **All cameras**, live substreams (also `/`). Click one for its main stream. |
+| `http://<this-box>:8080/` | **Camera 1 only** (the home page; also `/front`), live main stream: one NVR session. Add `?kiosk=1` for a chrome-less wall display. |
+| `http://<this-box>:8080/all` | **All cameras**, live substreams (also `/live`). Click one for its main stream. |
 | `/cam/1` … `/cam/4` | One camera, main stream |
 | `/playback` | Recorded playback: camera + local date/time + length. Shareable: `/playback?ch=1&utc=<ms>&min=2` |
 | `/events` | Motion-event timeline for a camera/day, with keyframe thumbnails; ←/→ to step, Enter to play |
