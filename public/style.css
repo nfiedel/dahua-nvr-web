@@ -48,6 +48,10 @@ button.primary { background: #1f4f7a; border-color: #2b6aa3; }
 .tile { position: relative; background: #000; border-radius: 10px; overflow: hidden; aspect-ratio: 16 / 9; cursor: pointer; border: 1px solid var(--line); }
 .tile:hover { border-color: var(--accent); }
 .tile video, .tile img.snap { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+/* Snapshots are 352x240 but the video displays at 16:9 (go2rtc's tkhd): stretch the snapshot into the same
+   centred 16:9 box so the placeholder doesn't jump when the video takes over. Without cq units: as above. */
+.tile { container-type: size; }
+.tile img.snap { margin: auto; width: min(100cqw, 100cqh * 16 / 9); height: min(100cqh, 100cqw * 9 / 16); object-fit: fill; }
 .tile .label { position: absolute; left: 0; right: 0; bottom: 0; padding: 18px 10px 6px; background: linear-gradient(transparent, rgba(0,0,0,.75)); font-size: 13px; pointer-events: none; }
 .tile .label span { color: #c5ced9; }
 .status { position: absolute; top: 8px; left: 8px; right: 8px; font-size: 12px; color: #fff; text-shadow: 0 1px 2px #000; pointer-events: none; }
