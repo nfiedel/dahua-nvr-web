@@ -195,23 +195,33 @@ function makeTile(cam, quality, { onclick, big } = {}) {
   const label = h('div', { class: 'label' }, h('b', {}, cam.name), h('span', {}, ` · ${cam.desc} · ${quality === 'main' ? cam.main : cam.sub}`));
   let player = null;
   const el = h('div', { class: 'tile' + (big ? ' big' : ''), onclick: onclick && ((e) => { if (!player.blocked) onclick(e); }) }, video, snap, status, label);
+  // Snapshot overlay (HTTP CGI, no RTSP session). 'poll': all NVR sessions busy, refresh every 10 s.
+  // 'once': placeholder while the live stream (re)connects, one request per connect. Hidden as soon as the
+  // video has a frame of its own (loadeddata also fires when autoplay is blocked; playing covers the rest).
   let snapTimer = null;
-  const showSnap = (on) => {
-    clearInterval(snapTimer); snap.hidden = !on;
-    if (on) { const load = () => { snap.src = `/api/snapshot?ch=${cam.ch}&t=${Date.now()}`; }; load(); snapTimer = setInterval(load, 10000); }
+  const loadSnap = () => { snap.src = `/api/snapshot?ch=${cam.ch}&t=${Date.now()}`; };
+  const showSnap = (mode) => {
+    clearInterval(snapTimer); snapTimer = null;
+    if (!mode) { snap.hidden = true; return; }
+    if (mode === 'poll' || snap.hidden) loadSnap(); // 'once' keeps an image that is already up
+    snap.hidden = false;
+    if (mode === 'poll') snapTimer = setInterval(loadSnap, 10000);
   };
+  snap.onerror = () => { if (!snapTimer) snap.hidden = true; }; // failed placeholder: no broken-image icon
+  video.addEventListener('loadeddata', () => showSnap(null));
+  video.addEventListener('playing', () => showSnap(null));
   const setStatus = (text, cls) => { status.textContent = text || ''; status.className = 'status' + (cls ? ' ' + cls : ''); };
   player = new MsePlayer(video, {
     live: true,
     onState: (s, msg) => {
-      if (s === 'playing') { setStatus(''); showSnap(false); }
-      else if (s === 'connecting') setStatus('Connecting…');
-      else if (s === 'busy') { setStatus('All NVR sessions in use — showing snapshot, retrying…', 'busy'); showSnap(true); }
-      else if (s === 'error') setStatus(msg || 'Error', 'err');
-      else if (s === 'idle') { setStatus(''); showSnap(false); }
+      if (s === 'playing') { setStatus(''); clearInterval(snapTimer); snapTimer = null; } // overlay goes on the first frame
+      else if (s === 'connecting') { setStatus('Connecting…'); showSnap('once'); }
+      else if (s === 'busy') { setStatus('All NVR sessions in use — showing snapshot, retrying…', 'busy'); showSnap('poll'); }
+      else if (s === 'error') { setStatus(msg || 'Error', 'err'); showSnap('once'); }
+      else if (s === 'idle') { setStatus(''); showSnap(null); }
     },
   });
-  return { el, start() { player.start(`live_${cam.ch}_${quality}`); }, stop() { player.stop(); showSnap(false); }, wake() { player.wake(); } };
+  return { el, start() { player.start(`live_${cam.ch}_${quality}`); }, stop() { player.stop(); showSnap(null); }, wake() { player.wake(); } };
 }
 
 // ===================================================================== views
